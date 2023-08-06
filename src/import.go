@@ -1,9 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall/js"
 )
 
 var imported = make(map[string]ArObject)
@@ -18,85 +19,36 @@ func FileExists(filename string) bool {
 	return false
 }
 
-func readFile(path string) ([]UNPARSEcode, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	// optionally, resize scanner's capacity for lines over 64K, see next example
+func readCode(code string, path string) []UNPARSEcode {
+	split := strings.Split(code, "\n")
 	output := []UNPARSEcode{}
 	line := 1
-	for scanner.Scan() {
-		text := scanner.Text()
+	for _, text := range split {
 		output = append(output, UNPARSEcode{text, text, line, path})
 		line++
 	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return output, nil
+	return output
 }
 
-func importMod(realpath string, origin string, main bool, global ArObject) (ArObject, ArErr) {
-	extention := filepath.Ext(realpath)
-	path := realpath
-	if extention == "" {
-		path += ".ar"
-	}
-	ex, err := os.Getwd()
+func importMod(path string, origin string, main bool, global ArObject) (ArObject, ArErr) {
+	p := path
+	realpath := p
+	result, err := await(js.Global().Call("fetch", path))
 	if err != nil {
-		return ArObject{}, ArErr{TYPE: "Import Error", message: "Could not get working directory", EXISTS: true}
+		return ArObject{}, ArErr{TYPE: "Import Error", message: "Could not fetch: " + path, EXISTS: true}
 	}
-	exc, err := os.Executable()
+	text, err := await(result[0].Call("text"))
 	if err != nil {
-		return ArObject{}, ArErr{TYPE: "Import Error", message: "Could not get executable", EXISTS: true}
-	}
-	executable := filepath.Dir(exc)
-	isABS := filepath.IsAbs(path)
-	var pathsToTest []string
-	if isABS {
-		pathsToTest = []string{
-			filepath.Join(path),
-			filepath.Join(realpath, "init.ar"),
-		}
-	} else {
-		pathsToTest = []string{
-			filepath.Join(origin, path),
-			filepath.Join(origin, realpath, "init.ar"),
-			filepath.Join(origin, modules_folder, path),
-			filepath.Join(origin, modules_folder, realpath, "init.ar"),
-			filepath.Join(ex, path),
-			filepath.Join(ex, modules_folder, path),
-			filepath.Join(ex, modules_folder, realpath, "init.ar"),
-			filepath.Join(executable, modules_folder, path),
-			filepath.Join(executable, modules_folder, realpath, "init.ar"),
-		}
-	}
-	var p string
-	var found bool
-	for _, p = range pathsToTest {
-		if FileExists(p) {
-			found = true
-			break
-		}
+		return ArObject{}, ArErr{TYPE: "Import Error", message: "Could not read text: " + path, EXISTS: true}
 	}
 
-	if !found {
-		return ArObject{}, ArErr{TYPE: "Import Error", message: "File does not exist: " + path, EXISTS: true}
-	} else if importing[p] {
+	if importing[p] {
 		return ArObject{}, ArErr{TYPE: "Import Error", message: "Circular import: " + path, EXISTS: true}
 	} else if _, ok := imported[p]; ok {
 		return imported[p], ArErr{}
 	}
 	importing[p] = true
-	codelines, err := readFile(p)
-	if err != nil {
-		return ArObject{}, ArErr{TYPE: "Import Error", message: "Could not read file: " + path, EXISTS: true}
-	}
+	codelines := readCode(text[0].String(), realpath)
 	translated, translationerr := translate(codelines)
 
 	if translationerr.EXISTS {
@@ -124,8 +76,8 @@ func importMod(realpath string, origin string, main bool, global ArObject) (ArOb
 				}
 				return importMod(args[0].(string), filepath.Dir(filepath.ToSlash(p)), false, global)
 			}},
-			"cwd": ex,
-			"exc": exc,
+			"cwd": ArString(""),
+			"exc": ArString(""),
 			"file": Map(anymap{
 				"name": filepath.Base(p),
 				"path": p,

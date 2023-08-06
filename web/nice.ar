@@ -1,0 +1,3 @@
+import "/other.ar" as other
+term.log("hello world")
+term.log(time.now())

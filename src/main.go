@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"syscall/js"
 )
 
 // args without the program path
@@ -10,7 +11,7 @@ var Args = os.Args[1:]
 
 type stack = []ArObject
 
-const VERSION = "3.0.1"
+const VERSION = "3.0.0"
 
 // Example struct
 type Person struct {
@@ -22,13 +23,44 @@ func newscope() ArObject {
 	return Map(anymap{})
 }
 
+func await(awaitable js.Value) ([]js.Value, []js.Value) {
+	then := make(chan []js.Value)
+	defer close(then)
+	thenFunc := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		then <- args
+		return nil
+	})
+	defer thenFunc.Release()
+
+	catch := make(chan []js.Value)
+	defer close(catch)
+	catchFunc := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		catch <- args
+		return nil
+	})
+	defer catchFunc.Release()
+
+	awaitable.Call("then", thenFunc).Call("catch", catchFunc)
+
+	select {
+	case result := <-then:
+		return result, nil
+	case err := <-catch:
+		return nil, err
+	}
+}
+
 func main() {
 	debugInit()
-
-	if !debug {
-		defer func() {
-			if r := recover(); r != nil {
-				fmt.Println("There was a fundamental error in argon v3 that caused it to crash.")
+	c := make(chan bool)
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("There was a fundamental error in argon v3 that caused it to crash.")
+			fmt.Println()
+			if fork {
+				fmt.Println("This is a fork of Open-Argon. Please report this to the fork's maintainer.")
+				fmt.Println("Fork repo:", forkrepo)
+				fmt.Println("Fork issue page:", forkissuesPage)
 				fmt.Println()
 				fmt.Println("website:", website)
 				fmt.Println("docs:", docs)
@@ -48,25 +80,19 @@ func main() {
 				fmt.Println("panic:", r)
 				os.Exit(1)
 			}
-		}()
-	}
+		}
+	}()
 	initRandom()
 	garbageCollect()
 	global := makeGlobal()
-	if len(Args) == 0 {
-		shell(global)
-		os.Exit(0)
-	}
-	ex, e := os.Getwd()
-	if e != nil {
-		panic(e)
-	}
-	_, err := importMod(Args[0], ex, true, global)
-	if err.EXISTS {
-		panicErr(err)
-		os.Exit(1)
-	}
-	if threadCount > 0 {
-		<-threadChan
-	}
+	obj := js.Global().Get("Object").New()
+	obj.Set("import", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		go func() {
+			importMod(args[0].String(), "", false, global)
+		}()
+
+		return nil
+	}))
+	js.Global().Set("Ar", obj)
+	<-c
 }

@@ -1,1 +1,1 @@
-go build -trimpath -ldflags="-s -w" -o bin/argon ./src
+GOOS=js GOARCH=wasm go build  -trimpath -ldflags="-s -w" -o web/ar/bin/argon.wasm ./src
